@@ -54,6 +54,7 @@ def start_anonymize():
         return
     log("Show Checked button pressed.")
     log(f"Result: {msg}")
+    batch_anonymize(progress_bar, input_dir, output_dir, checked)
     return
 
 def select_directory(idx):
@@ -145,7 +146,7 @@ def anonymize_callback(dataset, data_element, target):
         fulltag, method = t.split("|")
         fulltag = fulltag.strip()
         method = method.strip()
-        if method = "anon":
+        if method == "anon":
             tags_anon = tags_anon + fulltag + "\n"
         elif method == "date":
             tags_makedate = tags_makedate + fulltag + "\n"
@@ -160,18 +161,29 @@ def anonymize_callback(dataset, data_element, target):
     remove_value(tags_maketime, data_element, make_value_time)
     return
 
+def retrieve_callback(dataset, data_element, rst):
+    preserved_tags = """
+(0008, 0020) Study Date
+(0010, 0030) Patient's Birth Date
+(0008, 0050) Accession Number    
+(0010, 0040) Patient's Sex    
+(0010, 1010) Patient's Age
+"""    
+    retrieve_value(preserved_tags, data_element, rst)
+    return
 
-def anonymize_dicom_file(infile):
+def anonymize_dicom_file(infile, target):
     ds = pydicom.dcmread(infile)
     ds.remove_private_tags()
-    ds.walk(anonymize_callback) 
+    anon_functor = anonymize_functor(target)
+    ds.walk(anon_functor) 
     return ds
 
 class anonymize_functor:
     def __init__(self, target):
         self.target = target
     def __call__(self, dataset, data_element):
-        retrieve_callback(dataset, data_element, self.rst)
+        anonymize_callback(dataset, data_element, self.target)
 
 class retrieve_functor:
     def __init__(self):
@@ -190,20 +202,18 @@ def retrieve_data_from_dicom_file(infile):
 
     return rst, ds
 
-def batch_anonymize(progress_bar, input_dir, output_dir):
-    # recursively print all file names in INPUT_DIR, note that INPUT_DIR is nested
+def batch_anonymize(progress_bar, input_dir, output_dir, target):
     rst = []
     idx = 0 
     already_processed = set()
 
-    total_file_count = sum([len(files) for r, d, files in os.walk(INPUT_DIR)])
+    total_file_count = sum([len(files) for r, d, files in os.walk(input_dir)])
     log("Total files to process: {}".format(total_file_count))
 
     for root, dirs, files in os.walk(input_dir):
         for filename in files:
             idx = idx + 1
-            pregress_step = 1/total_file_count*100
-            progress_bar.step(progress_step)
+            progress_bar.step(1/total_file_count*100)
             
             rst = {}
             ds = None
@@ -213,8 +223,8 @@ def batch_anonymize(progress_bar, input_dir, output_dir):
                 rst, ds = retrieve_data_from_dicom_file(root+"\\"+filename)
                 
                 # change the topmost directory of root from input_dir to output_dir
-                outroot = output_dir  + root[len(INPUT_DIR):]
-                ds = anonymize_dicom_file(root+"\\"+filename)
+                outroot = output_dir  + root[len(input_dir):]
+                ds = anonymize_dicom_file(root+"\\"+filename, target)
 
                 # make sure the output directory exists
                 if not os.path.exists(outroot):
@@ -224,24 +234,23 @@ def batch_anonymize(progress_bar, input_dir, output_dir):
 
             except InvalidDicomError as e:
                 if filename.endswith(".nii") or filename.endswith(".DS_Store"):
-                    copy_as_is(root, filename, INPUT_DIR, OUTPUT_DIR)
+                    copy_as_is(root, filename, input_dir, output_dir)
                 else:
-                    print("Probably bad dicom file, copy AS IS:")
-                    print(root + "\\" + filename)
-                    copy_as_is(root, filename, INPUT_DIR, OUTPUT_DIR)
+                    log("Probably bad dicom file or unknown file, copy AS IS:")
+                    log(root + "\\" + filename)
+                    copy_as_is(root, filename, input_dir, output_dir)
                 continue
             except KeyError as e:
-                print("fail to grab patient data")
-                print(root + "\\" + filename)
-                print(e)
-                print(rst)
+                log("fail to grab patient data")
+                log(root + "\\" + filename)
+                log(e)
+                log(rst)
                 # dump all tags from ds
                 for elem in ds:
-                    print(str(elem.tag) + " " + str(elem.name) + " " + str(elem.value))
+                    log(str(elem.tag) + " " + str(elem.name) + " " + str(elem.value))
                 continue
         
-
-    print("total {num} file processed".format(num=idx))
+    log("Job complete! total {num} file processed".format(num=idx))
 
 # global settings
 DICOM_TAGS = """
@@ -285,9 +294,6 @@ for i in range(2):
     lbl = tk.Label(frame, textvariable=dir_vars[i], width=50, anchor='w')
     lbl.pack(side='left', padx=5)
 
-# --- Progress bar ---
-progress_bar = ttk.Progressbar(root, orient='horizontal', length=300, mode='indeterminate')
-progress_bar.pack(pady=6)
 
 # --- Checkboxes ---
 checkbox_info = []
@@ -319,7 +325,9 @@ for idx, (key, label) in enumerate(checkbox_info):
     checkboxes[key] = (var, label)
 
 
-
+# --- Progress bar ---
+progress_bar = ttk.Progressbar(root, orient='horizontal', length=500, mode='indeterminate')
+progress_bar.pack(pady=6)
 
 btn = tk.Button(root, text="Anonymize!", command=start_anonymize)
 btn.pack(pady=10)
