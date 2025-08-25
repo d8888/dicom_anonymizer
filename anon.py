@@ -320,7 +320,7 @@ for idx, (key, label) in enumerate(checkbox_info):
     var = tk.BooleanVar()
     col = idx // checkbox_per_col   # 0 or 1
     row = idx % checkbox_per_col
-    chk = tk.Checkbutton(checkbox_frame, text=label, variable=var, command=lambda k=key: on_checkbox_toggle(k))
+    chk = tk.Checkbutton(checkbox_frame, text=key, variable=var, command=lambda k=key: on_checkbox_toggle(k))
     chk.grid(row=row, column=col, sticky='w', padx=10, pady=2)
     checkboxes[key] = (var, label)
 
