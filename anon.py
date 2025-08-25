@@ -8,6 +8,8 @@ import pandas as pd
 import shutil
 import re
 import pydicom
+import queue
+import threading
 
 def log(msg):
     log_text.config(state='normal')
@@ -19,6 +21,10 @@ def start_anonymize():
     input_dir = dir_vars[0].get()
     output_dir = dir_vars[1].get()
 
+    if anonymize_running == True:
+        messagebox.showerror("Anonymization In Progress", "Anonymization is already in progress.")
+        return
+
     # check if both input_dir and output_dir are set
     if input_dir == "No directory selected" or output_dir == "No directory selected":
         messagebox.showerror("Directory Not Set", "Please set both input and output directories.")
@@ -27,6 +33,11 @@ def start_anonymize():
     # check if input_dir and output_dir are the same
     if input_dir == output_dir:
         messagebox.showerror("Directory Error", "Input and output directories cannot be the same.")
+        return
+
+    # check if output_dir is a subdirectory of input_dir
+    if output_dir.startswith(input_dir):
+        messagebox.showerror("Directory Error", "Output directory cannot be a subdirectory of input directory.")
         return
 
     # check if output_dir is empty directory
@@ -54,8 +65,42 @@ def start_anonymize():
         return
     log("Show Checked button pressed.")
     log(f"Result: {msg}")
-    batch_anonymize(progress_bar, input_dir, output_dir, checked)
+    t = threading.Thread(target=batch_anonymize, args=(input_dir, output_dir, checked), daemon=True)
+    t.start()
+    root.after(100, poll_queue)
     return
+
+def poll_queue():
+    try:
+        for _ in range(100):
+            msg = global_queue.get_nowait()
+            msgtype, msgcontent = msg.split("|", 1)
+            msgtype = msgtype.strip()
+            msgcontent = msgcontent.strip()
+
+            if msgtype== "MESSAGE":
+                log(msgcontent)
+            elif msgtype == "STEP":
+                now_idx, total = msgcontent.split(",", 1)
+                now_idx = int(now_idx)
+                total = int(total)
+                if total >0:
+                    progress_bar["value"] = (now_idx+1)/total * 100
+                else:
+                    progress_bar["value"] = 100
+                p_label = f"Progress: {round(progress_bar['value'],1)}% {now_idx+1}/{total}"
+                progress_label.config(text=p_label)
+            elif msgtype == "START":
+                anonymize_running = True
+                btn.config(state=tk.DISABLED)
+            elif msgtype == "COMPLETE":
+                anonymize_running = False
+                btn.config(state=tk.NORMAL)                
+            else:
+                log("unknown queue command:"+str(msg))
+    except queue.Empty:
+        pass
+    root.after(100, poll_queue)
 
 def select_directory(idx):
     dir_path = filedialog.askdirectory()
@@ -202,55 +247,82 @@ def retrieve_data_from_dicom_file(infile):
 
     return rst, ds
 
-def batch_anonymize(progress_bar, input_dir, output_dir, target):
+def worker_log(message):
+    msg = "MESSAGE | " + message
+    global_queue.put(msg)
+
+def worker_logstart():
+    msg = "START | -"
+    global_queue.put(msg)
+
+def worker_logcomplete():
+    msg = "COMPLETE | -"
+    global_queue.put(msg)
+
+
+def worker_step(now_index, total):
+    msg = "STEP | " + str(now_index)+","+str(total)
+    global_queue.put(msg)
+
+def batch_anonymize(input_dir, output_dir, target):
     rst = []
     idx = 0 
     already_processed = set()
 
     total_file_count = sum([len(files) for r, d, files in os.walk(input_dir)])
-    log("Total files to process: {}".format(total_file_count))
+    worker_log("Total files to process: {}".format(total_file_count))
 
+    worker_logstart()
     for root, dirs, files in os.walk(input_dir):
         for filename in files:
             idx = idx + 1
-            progress_bar.step(1/total_file_count*100)
-            
+            worker_step(idx, total_file_count)
+
+            # change the topmost directory of root from input_dir to output_dir
+            outroot = output_dir  + root[len(input_dir):]
+            out_path = outroot+"\\"+filename
+
             rst = {}
             ds = None
+
+            # Is output file already exist?
+            if os.path.exists(out_path):
+                worker_log("Output file already exists, skipping: {}".format(out_path))
+                continue
 
             try:
                 # get age and sex
                 rst, ds = retrieve_data_from_dicom_file(root+"\\"+filename)
-                
-                # change the topmost directory of root from input_dir to output_dir
-                outroot = output_dir  + root[len(input_dir):]
+
+                # anonymize
                 ds = anonymize_dicom_file(root+"\\"+filename, target)
 
                 # make sure the output directory exists
                 if not os.path.exists(outroot):
                     os.makedirs(outroot)
-
-                ds.save_as(outroot+"\\"+filename)
+                # save file
+                ds.save_as(out_path)
 
             except InvalidDicomError as e:
                 if filename.endswith(".nii") or filename.endswith(".DS_Store"):
                     copy_as_is(root, filename, input_dir, output_dir)
                 else:
-                    log("Probably bad dicom file or unknown file, copy AS IS:")
-                    log(root + "\\" + filename)
+                    worker_log("Probably bad dicom file or unknown file, copy AS IS:")
+                    worker_log(root + "\\" + filename)
                     copy_as_is(root, filename, input_dir, output_dir)
                 continue
             except KeyError as e:
-                log("fail to grab patient data")
-                log(root + "\\" + filename)
-                log(e)
-                log(rst)
+                worker_log("fail to grab patient data")
+                worker_log(root + "\\" + filename)
+                worker_log(e)
+                worker_log(rst)
                 # dump all tags from ds
                 for elem in ds:
-                    log(str(elem.tag) + " " + str(elem.name) + " " + str(elem.value))
+                    worker_log(str(elem.tag) + " " + str(elem.name) + " " + str(elem.value))
                 continue
         
-    log("Job complete! total {num} file processed".format(num=idx))
+    worker_log("Job complete! total {num} file processed".format(num=idx))
+    worker_logcomplete()
 
 # global settings
 DICOM_TAGS = """
@@ -278,6 +350,8 @@ DICOM_TAGS = """
 (0008, 0031) Series Time | time
 """
 
+anonymize_running = False
+global_queue = queue.Queue()    
 
 # -- Create TK -- 
 root = tk.Tk()
@@ -287,9 +361,10 @@ root.title("DICOM 去識別")
 dir_vars = [tk.StringVar(value="No directory selected") for _ in range(2)]
 
 for i in range(2):
+    dir_labels = ["Input Directory", "Output Directory"]
     frame = tk.Frame(root)
     frame.pack(fill='x', pady=2)
-    btn = tk.Button(frame, text=f"Select Directory {i+1}", command=lambda idx=i: select_directory(idx))
+    btn = tk.Button(frame, text=dir_labels[i], command=lambda idx=i: select_directory(idx))
     btn.pack(side='left')
     lbl = tk.Label(frame, textvariable=dir_vars[i], width=50, anchor='w')
     lbl.pack(side='left', padx=5)
@@ -326,8 +401,10 @@ for idx, (key, label) in enumerate(checkbox_info):
 
 
 # --- Progress bar ---
-progress_bar = ttk.Progressbar(root, orient='horizontal', length=500, mode='indeterminate')
+progress_bar = ttk.Progressbar(root, orient='horizontal', length=500, mode='determinate')
 progress_bar.pack(pady=6)
+progress_label = tk.Label(root, text="Progress: -/-")
+progress_label.pack()
 
 btn = tk.Button(root, text="Anonymize!", command=start_anonymize)
 btn.pack(pady=10)
