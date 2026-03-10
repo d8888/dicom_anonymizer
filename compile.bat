@@ -29,6 +29,17 @@ set "TCL_DIR=%TK_LIB%\tcl8.6"
 set "TK_DIR=%TK_LIB%\tk8.6"
 set "RTHOOK=%BUILDDIR%\rthook_tk.py"
 
+REM ------------------------------------------------------------
+REM ctypes/libffi bundling
+REM Some Python distributions (notably Conda) ship libffi as DLLs
+REM outside the standard DLLs folder (e.g. %base_prefix%\Library\bin).
+REM If these are not bundled into the one-file exe, importing ctypes
+REM (or packages that rely on it) can fail at runtime.
+REM ------------------------------------------------------------
+set "CTYPES_PYD="
+set "PY_BASE_PREFIX="
+set "FFI_DLL="
+
 if not exist "%ENTRY%" (
   echo [ERROR] Entry file not found: %ENTRY%
   exit /b 1
@@ -43,6 +54,27 @@ if not exist "%VENV%\Scripts\python.exe" (
 )
 
 set "PY=%VENV%\Scripts\python.exe"
+
+REM Detect locations for _ctypes.pyd and libffi/ffi DLLs from the build interpreter
+
+"%PY%" -c "import _ctypes; print(_ctypes.__file__)" > "ctypes.txt"
+set /p CTYPES_PYD=<"ctypes.txt"
+del "ctypes.txt"
+
+"%PY%" -c "import sys; print(sys.base_prefix)" > "baseprefix.txt"
+set /p PY_BASE_PREFIX=<"baseprefix.txt"
+del "baseprefix.txt"
+
+echo CTYPES_PYD=%CTYPES_PYD%
+echo PY_BASE_PREFIX=%PY_BASE_PREFIX%
+
+if defined PY_BASE_PREFIX (
+  for %%f in ("%PY_BASE_PREFIX%\DLLs\*ffi*.dll") do set "FFI_DLL=%%f"
+  for %%f in ("%PY_BASE_PREFIX%\Library\bin\*ffi*.dll") do set "FFI_DLL=%%f"
+)
+
+echo FFI_DLL=%FFI_DLL%
+
 
 REM Install deps for runtime + build (PyInstaller)
 echo Installing build dependencies...
@@ -94,12 +126,15 @@ REM Create a small runtime hook that points tkinter at the bundled scripts
 ) > "%RTHOOK%"
 
 echo [2/4] Building one-file exe...
+
 "%PY%" -m PyInstaller ^
   --noconfirm ^
   --clean ^
   --onefile ^
   --noconsole ^
   --windowed ^
+  --add-binary "%CTYPES_PYD%;." ^
+  --add-binary "%FFI_DLL%;." ^
   --add-binary "%TCL_DLL%;." ^
   --add-binary "%TK_DLL%;." ^
   --add-data "%TCL_DIR%;tcl\\tcl8.6" ^
