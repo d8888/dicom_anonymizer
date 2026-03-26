@@ -18,6 +18,8 @@ def log(msg):
     log_text.config(state='disabled')
 
 def start_anonymize():
+    pydicom.config.convert_wrong_length_to_UN = True
+
     input_dir = dir_vars[0].get()
     output_dir = dir_vars[1].get()
 
@@ -36,7 +38,9 @@ def start_anonymize():
         return
 
     # check if output_dir is a subdirectory of input_dir
-    if output_dir.startswith(input_dir):
+    d1 = output_dir.replace("/", "\\").rstrip("\\") + "\\"
+    d2 = input_dir.replace("/", "\\").rstrip("\\") + "\\"
+    if d1.startswith(d2):
         messagebox.showerror("Directory Error", "Output directory cannot be a subdirectory of input directory.")
         return
 
@@ -115,7 +119,7 @@ def on_checkbox_toggle(var_key):
 
 
 def get_dicom_tags(infile):
-    ds = pydicom.dcmread(infile)
+    ds = pydicom.dcmread(infile, force=True)
     rst = [str(elem.tag) + " " + str(elem.name) for elem in ds]
     return rst
 
@@ -301,7 +305,7 @@ def batch_anonymize(input_dir, output_dir, target):
                 if not os.path.exists(outroot):
                     os.makedirs(outroot)
                 # save file
-                ds.save_as(out_path)
+                ds.save_as(out_path, write_like_original=True)
 
             except InvalidDicomError as e:
                 if filename.endswith(".nii") or filename.endswith(".DS_Store"):
